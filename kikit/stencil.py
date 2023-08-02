@@ -55,7 +55,7 @@ def addRoundedCorner(board, center, start, end, thickness, stencil_type: Stencil
     board.Add(corner)
     addBottomCounterpart(board, corner, stencil_type)
 
-def addLine(board, start, end, thickness: int, stencil_type: StencilType = StencilType.SolderPaste):
+def addLine(board, start, end, thickness, stencil_type: StencilType = StencilType.SolderPaste):
     line = pcbnew.PCB_SHAPE()
     line.SetShape(STROKE_T.S_SEGMENT)
     line.SetStart(VECTOR2I(start[0], start[1]))
@@ -65,7 +65,7 @@ def addLine(board, start, end, thickness: int, stencil_type: StencilType = Stenc
     board.Add(line)
     addBottomCounterpart(board, line, stencil_type)
 
-def addBite(board, origin, direction, normal, thickness: int, stencil_type: StencilType = StencilType.SolderPaste):
+def addBite(board, origin, direction, normal, thickness, stencil_type: StencilType = StencilType.SolderPaste):
     """
     Adds a bite to the stencil, direction points to the bridge, normal points
     inside the stencil
@@ -87,7 +87,7 @@ def numberOfCuts(length, bridgeWidth, bridgeSpacing):
     return count, cutLength
 
 
-def addFrame(board, rect, bridgeWidth: int, bridgeSpacing: int, clearance: int, stencil_type: StencilType = StencilType.SolderPaste):
+def addFrame(board, rect, bridgeWidth, bridgeSpacing, clearance, stencil_type: StencilType = StencilType.SolderPaste):
     """
     Add rectangular frame to the board
     """
@@ -137,7 +137,7 @@ def addFrame(board, rect, bridgeWidth: int, bridgeSpacing: int, clearance: int, 
             addBite(board, VECTOR2I(x2, end), VECTOR2I(0, 1), VECTOR2I(-1, 0), clearance, stencil_type)
 
 
-def addHole(board, position, radius: int, stencil_type: StencilType = StencilType.SolderPaste):
+def addHole(board, position, radius, stencil_type: StencilType = StencilType.SolderPaste):
     circle = pcbnew.PCB_SHAPE()
     circle.SetShape(STROKE_T.S_CIRCLE)
     circle.SetCenter(VECTOR2I(position[0], position[1]))
@@ -149,8 +149,8 @@ def addHole(board, position, radius: int, stencil_type: StencilType = StencilTyp
     board.Add(circle)
     addBottomCounterpart(board, circle, stencil_type)
 
-def addJigFrame(board, jigFrameSize: (int, int), bridgeWidth: int=fromMm(2),
-                bridgeSpacing: int=fromMm(10), clearance: int=fromMm(0.5), stencil_type: StencilType = StencilType.SolderPaste):
+def addJigFrame(board, jigFrameSize, bridgeWidth=fromMm(2),
+                bridgeSpacing=fromMm(10), clearance=fromMm(0.5), stencil_type: StencilType = StencilType.SolderPaste):
     """
     Given a Pcbnew board finds the board outline and creates a stencil for
     KiKit's stencil jig.
@@ -357,8 +357,8 @@ def setStencilLayerVisibility(boardName):
 from pathlib import Path
 import os
 
-def create(inputboard: str, outputdir: str, jigsize: (int, int), jigthickness: float, pcbthickness: float,
-           registerborder: (float, float), tolerance: float, ignore: str, cutout: str, type: StencilType = StencilType.SolderPaste):
+def create(inputboard, outputdir, jigsize, jigthickness, pcbthickness,
+           registerborder, tolerance, ignore, cutout, type: StencilType = StencilType.SolderPaste):
     board = pcbnew.LoadBoard(inputboard)
     removeComponents(board, parseReferences(ignore))
     cutoutComponents(board, getComponents(board, parseReferences(cutout)), type)
