@@ -1393,7 +1393,7 @@ class Panel:
                 segment.SetWidth(fromMm(0.3))
                 self.board.Add(segment)
 
-    def addNPTHole(self, position: VECTOR2I, diameter: KiLength, paste: bool=False) -> None:
+    def addNPTHole(self, position: VECTOR2I, diameter: KiLength, paste: bool=False, adhesive: bool=False) -> None:
         """
         Add a drilled non-plated hole to the position (`VECTOR2I`) with given
         diameter. The paste option allows to place the hole on the paste layers.
@@ -1403,10 +1403,14 @@ class Panel:
         for pad in footprint.Pads():
             pad.SetDrillSize(toKiCADPoint((diameter, diameter)))
             pad.SetSize(toKiCADPoint((diameter, diameter)))
-            if paste:
+            if paste or adhesive:
                 layerSet = pad.GetLayerSet()
-                layerSet.AddLayer(Layer.F_Paste)
-                layerSet.AddLayer(Layer.B_Paste)
+                if paste:
+                    layerSet.AddLayer(Layer.F_Paste)
+                    layerSet.AddLayer(Layer.B_Paste)
+                if adhesive:
+                    layerSet.AddLayer(Layer.F_Adhes)
+                    layerSet.AddLayer(Layer.B_Adhes)
                 pad.SetLayerSet(layerSet)
         self.board.Add(footprint)
 

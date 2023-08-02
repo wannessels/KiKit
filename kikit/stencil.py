@@ -6,7 +6,7 @@ from collections import OrderedDict
 from kikit.common import *
 from kikit.defs import *
 from kikit.substrate import Substrate, extractRings, toShapely, linestringToKicad
-from kikit.export import gerberImpl, pasteDxfExport
+from kikit.export import gerberImpl, pasteDxfExport, LayerToPlot, PasteTop, PasteBottom, AdhesiveTop, AdhesiveBottom
 from kikit.export import exportSettingsJlcpcb
 import solid
 import solid.utils
@@ -23,12 +23,22 @@ MOUNTING_HOLES_COUNT = 3
 MOUNTING_HOLE_R = fromMm(1)
 HOLE_SPACING = fromMm(20)
 
-def addBottomCounterpart(board, item):
+
+class StencilType(Enum):
+    SolderPaste = (PasteTop, PasteBottom)
+    Adhesive = (AdhesiveTop, AdhesiveBottom)
+
+    def __init__(self, top_layer: LayerToPlot, bottom_layer: LayerToPlot):
+        self.top_layer = top_layer
+        self.bottom_layer = bottom_layer
+
+
+def addBottomCounterpart(board, item, stencil_type: StencilType = StencilType.SolderPaste):
     item = item.Duplicate()
-    item.SetLayer(Layer.B_Paste)
+    item.SetLayer(stencil_type.bottom_layer.id)
     board.Add(item)
 
-def addRoundedCorner(board, center, start, end, thickness):
+def addRoundedCorner(board, center, start, end, thickness, stencil_type: StencilType = StencilType.SolderPaste):
     corner = pcbnew.PCB_SHAPE()
     corner.SetShape(STROKE_T.S_ARC)
     corner.SetCenter(VECTOR2I(center[0], center[1]))
@@ -39,32 +49,32 @@ def addRoundedCorner(board, center, start, end, thickness):
     else:
         corner.SetArcAngleAndEnd(fromDegrees(-90), True)
     corner.SetWidth(thickness)
-    corner.SetLayer(Layer.F_Paste)
+    corner.SetLayer(stencil_type.top_layer.id)
     board.Add(corner)
-    addBottomCounterpart(board, corner)
+    addBottomCounterpart(board, corner, stencil_type)
 
-def addLine(board, start, end, thickness):
+def addLine(board, start, end, thickness, stencil_type: StencilType = StencilType.SolderPaste):
     line = pcbnew.PCB_SHAPE()
     line.SetShape(STROKE_T.S_SEGMENT)
     line.SetStart(VECTOR2I(start[0], start[1]))
     line.SetEnd(VECTOR2I(end[0], end[1]))
     line.SetWidth(thickness)
-    line.SetLayer(Layer.F_Paste)
+    line.SetLayer(stencil_type.top_layer.id)
     board.Add(line)
-    addBottomCounterpart(board, line)
+    addBottomCounterpart(board, line, stencil_type)
 
-def addBite(board, origin, direction, normal, thickness):
+def addBite(board, origin, direction, normal, thickness, stencil_type: StencilType = StencilType.SolderPaste):
     """
     Adds a bite to the stencil, direction points to the bridge, normal points
     inside the stencil
     """
     direction = normalize(direction) * thickness
     normal = normalize(normal) * thickness
-    center = VECTOR2I(origin[0], origin[1]) + VECTOR2I(normal[0], normal[1])
+    center = toKiCADPoint((origin[0], origin[1])) + toKiCADPoint((normal[0], normal[1]))
     start = origin
-    end = center + VECTOR2I(direction[0], direction[1])
+    end = center + toKiCADPoint((direction[0], direction[1]))
     # addLine(board, end, end + normal / 2, thickness)
-    addRoundedCorner(board, center, start, end, thickness)
+    addRoundedCorner(board, center, start, end, thickness, stencil_type)
 
 def numberOfCuts(length, bridgeWidth, bridgeSpacing):
     """
@@ -74,7 +84,7 @@ def numberOfCuts(length, bridgeWidth, bridgeSpacing):
     cutLength = (length - (count - 1) * bridgeWidth) / count
     return count, cutLength
 
-def addFrame(board, rect, bridgeWidth, bridgeSpacing, clearance):
+def addFrame(board, rect, bridgeWidth, bridgeSpacing, clearance, stencil_type: StencilType = StencilType.SolderPaste):
     """
     Add rectangular frame to the board
     """
@@ -87,56 +97,56 @@ def addFrame(board, rect, bridgeWidth, bridgeSpacing, clearance):
         (bl(rect), VECTOR2I(0, -R), VECTOR2I(R, 0)) # BL
     ]
     for c, sOffset, eOffset in corners:
-        addRoundedCorner(board, c + sOffset + eOffset, c + sOffset, c + eOffset, clearance)
+        addRoundedCorner(board, c + sOffset + eOffset, c + sOffset, c + eOffset, clearance, stencil_type)
 
     count, cutLength = numberOfCuts(rect.GetWidth() - 2 * R, bridgeWidth, bridgeSpacing)
     for i in range(count):
-        start = rect.GetX() + R + i * bridgeWidth + i * cutLength
-        end = start + cutLength
+        start = int(rect.GetX() + R + i * bridgeWidth + i * cutLength)
+        end = int(start + cutLength)
 
         y1, y2 = rect.GetY(), rect.GetY() + rect.GetHeight()
-        addLine(board, VECTOR2I(start, y1), VECTOR2I(end, y1), clearance)
+        addLine(board, VECTOR2I(start, y1), VECTOR2I(end, y1), clearance, stencil_type)
         if i != 0:
-            addBite(board, VECTOR2I(start, y1), VECTOR2I(-1, 0), VECTOR2I(0, 1), clearance)
+            addBite(board, VECTOR2I(start, y1), VECTOR2I(-1, 0), VECTOR2I(0, 1), clearance, stencil_type)
         if i != count - 1:
-            addBite(board, VECTOR2I(end, y1), VECTOR2I(1, 0), VECTOR2I(0, 1), clearance)
-        addLine(board, VECTOR2I(start, y2), VECTOR2I(end, y2), clearance)
+            addBite(board, VECTOR2I(end, y1), VECTOR2I(1, 0), VECTOR2I(0, 1), clearance, stencil_type)
+        addLine(board, VECTOR2I(start, y2), VECTOR2I(end, y2), clearance, stencil_type)
         if i != 0:
-            addBite(board, VECTOR2I(start, y2), VECTOR2I(-1, 0), VECTOR2I(0, -1), clearance)
+            addBite(board, VECTOR2I(start, y2), VECTOR2I(-1, 0), VECTOR2I(0, -1), clearance, stencil_type)
         if i != count - 1:
-            addBite(board, VECTOR2I(end, y2), VECTOR2I(1, 0), VECTOR2I(0, -1), clearance)
+            addBite(board, VECTOR2I(end, y2), VECTOR2I(1, 0), VECTOR2I(0, -1), clearance, stencil_type)
 
     count, cutLength = numberOfCuts(rect.GetHeight() - 2 * R, bridgeWidth, bridgeSpacing)
     for i in range(count):
-        start = rect.GetY() + R + i * bridgeWidth + i * cutLength
-        end = start + cutLength
+        start = int(rect.GetY() + R + i * bridgeWidth + i * cutLength)
+        end = int(start + cutLength)
 
         x1, x2 = rect.GetX(), rect.GetX() + rect.GetWidth()
-        addLine(board, VECTOR2I(x1, start), VECTOR2I(x1, end), clearance)
+        addLine(board, VECTOR2I(x1, start), VECTOR2I(x1, end), clearance, stencil_type)
         if i != 0:
-            addBite(board, VECTOR2I(x1, start), VECTOR2I(0, -1), VECTOR2I(1, 0), clearance)
+            addBite(board, VECTOR2I(x1, start), VECTOR2I(0, -1), VECTOR2I(1, 0), clearance, stencil_type)
         if i != count - 1:
-            addBite(board, VECTOR2I(x1, end), VECTOR2I(0, 1), VECTOR2I(1, 0), clearance)
-        addLine(board, VECTOR2I(x2, start), VECTOR2I(x2, end), clearance)
+            addBite(board, VECTOR2I(x1, end), VECTOR2I(0, 1), VECTOR2I(1, 0), clearance, stencil_type)
+        addLine(board, VECTOR2I(x2, start), VECTOR2I(x2, end), clearance, stencil_type)
         if i != 0:
-            addBite(board, VECTOR2I(x2, start), VECTOR2I(0, -1), VECTOR2I(-1, 0), clearance)
+            addBite(board, VECTOR2I(x2, start), VECTOR2I(0, -1), VECTOR2I(-1, 0), clearance, stencil_type)
         if i != count - 1:
-            addBite(board, VECTOR2I(x2, end), VECTOR2I(0, 1), VECTOR2I(-1, 0), clearance)
+            addBite(board, VECTOR2I(x2, end), VECTOR2I(0, 1), VECTOR2I(-1, 0), clearance, stencil_type)
 
-def addHole(board, position, radius):
+def addHole(board, position, radius, stencil_type: StencilType = StencilType.SolderPaste):
     circle = pcbnew.PCB_SHAPE()
     circle.SetShape(STROKE_T.S_CIRCLE)
-    circle.SetCenter(VECTOR2I(position[0], position[1]))
+    circle.SetCenter(toKiCADPoint((position[0], position[1])))
     # Set 3'oclock point of the circle to set radius
-    circle.SetEnd(VECTOR2I(position[0], position[1]) + VECTOR2I(radius/2, 0))
+    circle.SetEnd(toKiCADPoint((position[0], position[1])) + toKiCADPoint((radius/2, 0)))
 
     circle.SetWidth(radius)
-    circle.SetLayer(Layer.F_Paste)
+    circle.SetLayer(stencil_type.top_layer.id)
     board.Add(circle)
-    addBottomCounterpart(board, circle)
+    addBottomCounterpart(board, circle, stencil_type)
 
 def addJigFrame(board, jigFrameSize, bridgeWidth=fromMm(2),
-                bridgeSpacing=fromMm(10), clearance=fromMm(0.5)):
+                bridgeSpacing=fromMm(10), clearance=fromMm(0.5), stencil_type: StencilType = StencilType.SolderPaste):
     """
     Given a Pcbnew board finds the board outline and creates a stencil for
     KiKit's stencil jig.
@@ -152,31 +162,31 @@ def addJigFrame(board, jigFrameSize, bridgeWidth=fromMm(2),
     cutSize = rectByCenter(rectCenter(bBox),
         jigFrameSize[0] + 2 * (OUTER_BORDER + INNER_BORDER) - fromMm(1),
         jigFrameSize[1] + 2 * (OUTER_BORDER + INNER_BORDER) - fromMm(1))
-    addFrame(board, cutSize, bridgeWidth, bridgeSpacing, clearance)
+    addFrame(board, cutSize, bridgeWidth, bridgeSpacing, clearance, stencil_type)
 
     for i in range(MOUNTING_HOLES_COUNT):
         x = frameSize.GetX() + OUTER_BORDER / 2 + (i + 1) * (frameSize.GetWidth() - OUTER_BORDER) / (MOUNTING_HOLES_COUNT + 1)
-        addHole(board, VECTOR2I(x, OUTER_BORDER / 2 + frameSize.GetY()), MOUNTING_HOLE_R)
-        addHole(board, VECTOR2I(x, - OUTER_BORDER / 2 +frameSize.GetY() + frameSize.GetHeight()), MOUNTING_HOLE_R)
+        addHole(board, toKiCADPoint((x, OUTER_BORDER / 2 + frameSize.GetY())), MOUNTING_HOLE_R, stencil_type)
+        addHole(board, toKiCADPoint((x, - OUTER_BORDER / 2 +frameSize.GetY() + frameSize.GetHeight())), MOUNTING_HOLE_R, stencil_type)
     for i in range(MOUNTING_HOLES_COUNT):
         y = frameSize.GetY() + OUTER_BORDER / 2 + (i + 1) * (frameSize.GetHeight() - OUTER_BORDER) / (MOUNTING_HOLES_COUNT + 1)
-        addHole(board, VECTOR2I(OUTER_BORDER / 2 + frameSize.GetX(), y), MOUNTING_HOLE_R)
-        addHole(board, VECTOR2I(- OUTER_BORDER / 2 +frameSize.GetX() + frameSize.GetWidth(), y), MOUNTING_HOLE_R)
+        addHole(board, toKiCADPoint((OUTER_BORDER / 2 + frameSize.GetX(), y)), MOUNTING_HOLE_R, stencil_type)
+        addHole(board, toKiCADPoint((- OUTER_BORDER / 2 +frameSize.GetX() + frameSize.GetWidth(), y)), MOUNTING_HOLE_R, stencil_type)
 
     PIN_TOLERANCE = fromMm(0.05)
-    addHole(board, tl(frameSize) + VECTOR2I(OUTER_BORDER / 2, OUTER_BORDER / 2), MOUNTING_HOLE_R + PIN_TOLERANCE)
-    addHole(board, tr(frameSize) + VECTOR2I(-OUTER_BORDER / 2, OUTER_BORDER / 2), MOUNTING_HOLE_R + PIN_TOLERANCE)
-    addHole(board, br(frameSize) + VECTOR2I(-OUTER_BORDER / 2, -OUTER_BORDER / 2), MOUNTING_HOLE_R + PIN_TOLERANCE)
-    addHole(board, bl(frameSize) + VECTOR2I(OUTER_BORDER / 2, -OUTER_BORDER / 2), MOUNTING_HOLE_R + PIN_TOLERANCE)
+    addHole(board, tl(frameSize) + toKiCADPoint((OUTER_BORDER / 2, OUTER_BORDER / 2)), MOUNTING_HOLE_R + PIN_TOLERANCE, stencil_type)
+    addHole(board, tr(frameSize) + toKiCADPoint((-OUTER_BORDER / 2, OUTER_BORDER / 2)), MOUNTING_HOLE_R + PIN_TOLERANCE, stencil_type)
+    addHole(board, br(frameSize) + toKiCADPoint((-OUTER_BORDER / 2, -OUTER_BORDER / 2)), MOUNTING_HOLE_R + PIN_TOLERANCE, stencil_type)
+    addHole(board, bl(frameSize) + toKiCADPoint((OUTER_BORDER / 2, -OUTER_BORDER / 2)), MOUNTING_HOLE_R + PIN_TOLERANCE, stencil_type)
 
 def jigMountingHoles(jigFrameSize, origin=VECTOR2I(0, 0)):
     """ Get list of all mounting holes in a jig of given size """
     w, h = jigFrameSize
     holes = [
-        VECTOR2I(0, (w + INNER_BORDER) / 2),
-        VECTOR2I(0, -(w + INNER_BORDER) / 2),
-        VECTOR2I((h + INNER_BORDER) / 2, 0),
-        VECTOR2I(-(h + INNER_BORDER) / 2, 0),
+        toKiCADPoint((0, (w + INNER_BORDER) / 2)),
+        toKiCADPoint((0, -(w + INNER_BORDER) / 2)),
+        toKiCADPoint(((h + INNER_BORDER) / 2, 0)),
+        toKiCADPoint((-(h + INNER_BORDER) / 2, 0)),
     ]
     return [x + origin for x in holes]
 
@@ -286,20 +296,20 @@ def shapelyToSHAPE_POLY_SET(polygon):
     p.AddOutline(linestringToKicad(polygon.exterior))
     return p
 
-def cutoutComponents(board, components):
+def cutoutComponents(board, components, stencil_type: StencilType = StencilType.SolderPaste):
     topCutout = extractComponentPolygons(components, pcbnew.F_CrtYd)
     for polygon in topCutout:
         zone = pcbnew.PCB_SHAPE()
         zone.SetShape(STROKE_T.S_POLYGON)
         zone.SetPolyShape(shapelyToSHAPE_POLY_SET(polygon))
-        zone.SetLayer(Layer.F_Paste)
+        zone.SetLayer(stencil_type.top_layer.id)
         board.Add(zone)
     bottomCutout = extractComponentPolygons(components, pcbnew.B_CrtYd)
     for polygon in bottomCutout:
         zone = pcbnew.PCB_SHAPE()
         zone.SetShape(STROKE_T.S_POLYGON)
         zone.SetPolyShape(shapelyToSHAPE_POLY_SET(polygon))
-        zone.SetLayer(Layer.B_Paste)
+        zone.SetLayer(stencil_type.bottom_layer.id)
         board.Add(zone)
 
 def setStencilLayerVisibility(boardName):
@@ -344,16 +354,15 @@ from pathlib import Path
 import os
 
 def create(inputboard, outputdir, jigsize, jigthickness, pcbthickness,
-           registerborder, tolerance, ignore, cutout):
+           registerborder, tolerance, ignore, cutout, type: StencilType = StencilType.SolderPaste):
     board = pcbnew.LoadBoard(inputboard)
-    refs = parseReferences(ignore)
-    removeComponents(board, refs)
+    removeComponents(board, parseReferences(ignore))
+    cutoutComponents(board, getComponents(board, parseReferences(cutout)), stencil_type=type)
 
     Path(outputdir).mkdir(parents=True, exist_ok=True)
 
-    jigsize = (fromMm(jigsize[0]), fromMm(jigsize[1]))
-    addJigFrame(board, jigsize)
-    cutoutComponents(board, getComponents(board, parseReferences(cutout)))
+    #jigsize = (fromMm(jigsize[0]), fromMm(jigsize[1]))
+    #addJigFrame(board, jigsize, stencil_type=type)
 
     stencilFile = os.path.join(outputdir, "stencil.kicad_pcb")
     board.Save(stencilFile)
@@ -361,9 +370,8 @@ def create(inputboard, outputdir, jigsize, jigthickness, pcbthickness,
     setStencilLayerVisibility(stencilFile)
 
     plotPlan = [
-        # name, id, comment
-        ("PasteBottom", pcbnew.B_Paste, "Paste Bottom"),
-        ("PasteTop", pcbnew.F_Paste, "Paste top"),
+        type.top_layer,
+        #type.bottom_layer
     ]
     # get a copy of exportSettingsJlcpcb dictionary and
     # exclude the Edge.Cuts layer for creation of stencil gerber files
@@ -374,22 +382,6 @@ def create(inputboard, outputdir, jigsize, jigthickness, pcbthickness,
 
     shutil.make_archive(os.path.join(outputdir, "gerbers"), "zip", gerberDir)
 
-    jigthickness = fromMm(jigthickness)
-    pcbthickness = fromMm(pcbthickness)
-    outerBorder, innerBorder = fromMm(registerborder[0]), fromMm(registerborder[1])
-    tolerance = fromMm(tolerance)
-    topRegister = makeTopRegister(board, jigsize,jigthickness, pcbthickness,
-        outerBorder, innerBorder, tolerance)
-    bottomRegister = makeBottomRegister(board, jigsize,jigthickness, pcbthickness,
-        outerBorder, innerBorder, tolerance)
-
-    topRegisterFile = os.path.join(outputdir, "topRegister.scad")
-    solid.scad_render_to_file(topRegister, topRegisterFile)
-    renderScad(topRegisterFile, os.path.join(outputdir, "topRegister.stl"))
-
-    bottomRegisterFile = os.path.join(outputdir, "bottomRegister.scad")
-    solid.scad_render_to_file(bottomRegister, bottomRegisterFile)
-    renderScad(bottomRegisterFile, os.path.join(outputdir, "bottomRegister.stl"))
 
 def printedStencilSubstrate(outlineDxf, thickness, frameHeight, frameWidth, frameClearance):
     bodyOffset = solid.utils.up(0) if frameWidth + frameClearance == 0 else solid.offset(r=frameWidth + frameClearance)
